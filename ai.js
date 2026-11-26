@@ -93,7 +93,12 @@ async function viaProxy(prompt, w, h, seed, signal) {
   const ac = new AbortController(), onAbort = () => ac.abort(); signal?.addEventListener('abort', onAbort);
   const tm = setTimeout(() => ac.abort(), 120000);
   try {
-    const r = await fetch(PROXY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, w: W, h: H, seed: seed % 100000 }), signal: ac.signal });
+    let r;
+    for (let n = 0; n < 10; n++) {
+      r = await fetch(PROXY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, w: W, h: H, seed: seed % 100000 }), signal: ac.signal });
+      if (r.status === 429) { const e = await r.clone().json().catch(() => ({})); if (e.error === 'rate' || e.error === 'busy') { await sleep(2000 + n * 1000); continue; } }
+      break;
+    }
     if (!r.ok) { try { localStorage.setItem('ebda3_p_off', String(Date.now() + (r.status === 429 ? 5 : 2) * 60000)); } catch {} return null; }
     const b = await r.blob(); if (!b.type.startsWith('image/')) return null;
     setStatus({ quota: false, bad: false, down: false, last: 'z-image' }); return b;
@@ -124,13 +129,13 @@ async function zImage(prompt, w, h, seed, signal) {
   finally { clearTimeout(tm); signal?.removeEventListener('abort', onAbort); }
 }
 export function genImage(prompt, { w = 1024, h = 1024, seed, signal, onBusy, flatten = false } = {}) {
-  return queued(async () => {
+  return (async () => {
     const s = seed ?? Math.floor(Math.random() * 1e6);
     let blob = null, src = 'pollinations';
     blob = await zImage(prompt, w, h, s, signal); if (blob) src = 'z-image'; else setStatus({ last: 'pollinations' });
     if (!blob) {
       const url = IMG_URL + encodeURIComponent(prompt) + '?width=' + w + '&height=' + h + '&seed=' + s + '&nologo=true&safe=true';
-      const r = await fetchRetry(url, {}, { timeout: 120000, signal, onBusy });
+      const r = await queued(() => fetchRetry(url, {}, { timeout: 120000, signal, onBusy }));
       const type = r.headers.get('content-type') || '';
       if (!type.startsWith('image/')) throw new AiError('not image', 'bad');
       blob = await r.blob();
@@ -142,7 +147,7 @@ export function genImage(prompt, { w = 1024, h = 1024, seed, signal, onBusy, fla
     const x = c.getContext('2d', { willReadFrequently: true }); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(bmp, 0, 0, bmp.width, ch, 0, 0, c.width, ch);
     if (flatten) toLineArt(x, c.width, c.height);
     return { dataUrl: c.toDataURL('image/jpeg', 0.9), w: c.width, h: c.height, seed: s, src };
-  });
+  })();
 }
 
 const LANGN = { ar: 'Arabic', en: 'English', fr: 'French', es: 'Spanish', de: 'German', tr: 'Turkish' };
