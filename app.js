@@ -25,6 +25,12 @@ const styleOpts = () => STYLE_KEYS.map(k => [k, t('st_' + k)]);
 const ageOpts = () => AGES.map(k => [k, t('ages_' + k)]);
 
 // ---------- shell ----------
+function syncBar() {
+  document.querySelectorAll('.imgbar').forEach(e => e.remove());
+  const s = AI.imgStatus(); if (!(s.bad || s.quota) || Date.now() - (s.ts || 0) > 3600000) return;
+  document.body.insertAdjacentHTML('afterbegin', `<div class="imgbar" role="status">${esc(t(s.bad ? 'hf_bad' : AI.hfToken() ? 'hf_quota_t' : 'hf_quota'))} <a href="#/settings">${t('nav_settings')}</a></div>`);
+}
+window.addEventListener('ebda3-img', syncBar);
 function shell(inner, active) {
   const nav = [['home', '#/', 'nav_home'], ['create', '#/create', 'nav_create'], ['tools', '#/tools', 'nav_tools'], ['library', '#/library', 'nav_library'], ['faq', '#/faq', 'nav_faq']];
   app.innerHTML = `<header class="top"><a class="brand" href="#/">${LOGO}<span>${esc(t('brand'))}</span></a>
@@ -32,6 +38,7 @@ function shell(inner, active) {
   <div class="tools"><button class="icon" data-act="lang" title="${t('s_lang')}">${getLang() === 'ar' ? 'EN' : 'ع'}</button>
   <button class="icon" data-act="theme" title="${t('s_theme')}">◐</button><a class="icon" href="#/settings" title="${t('nav_settings')}">⚙</a></div></header>
   <main class="${active}">${inner}</main><footer>${t('footer')}</footer>`;
+  syncBar();
   $('[data-act=lang]').onclick = () => { setLang(getLang() === 'ar' ? 'en' : 'ar'); route(); };
   $('[data-act=theme]').onclick = () => { settings.set('theme', document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); apply(); };
 }
@@ -58,9 +65,12 @@ function settingsPage() {
   shell(`<section class="narrow"><h2>${t('s_h')}</h2><div class="card form"><label>${t('s_lang')}</label><div class="seg"><button data-l="ar" class="${getLang() === 'ar' ? 'on' : ''}">العربية</button><button data-l="en" class="${getLang() === 'en' ? 'on' : ''}">English</button></div>
   <label>${t('s_theme')}</label><div class="seg"><button data-th="light">${t('s_light')}</button><button data-th="dark">${t('s_dark')}</button></div></div>
   <div class="card"><h3>${t('s_acct_h')}</h3><p>${t('s_acct_p')}</p><h3>${t('s_priv_h')}</h3><p>${t('s_priv_p')}</p></div>
+  <div class="card form"><h3>${t('hf_h')}</h3><p>${t('hf_p')}</p><input type="password" id="hft" autocomplete="off" spellcheck="false" placeholder="${t('hf_ph')}"><div class="row"><button class="btn primary" id="hfs">${t('hf_save')}</button><button class="btn" id="hfr">${t('hf_rm')}</button></div><p class="muted" id="hfst">${AI.hfToken() ? t('hf_has') : t('hf_none')}${AI.imgStatus().last ? ' · ' + t('hf_last') + ': ' + t(AI.imgStatus().last === 'z-image' ? 'hf_src_z' : 'hf_src_p') : ''}</p></div>
   <div class="card"><h3>${t('s_data')}</h3><button class="btn danger" id="clr">${t('s_clear')}</button></div></section>`, 'settings');
   $$('[data-l]').forEach(b => b.onclick = () => { setLang(b.dataset.l); route(); });
   $$('[data-th]').forEach(b => b.onclick = () => { settings.set('theme', b.dataset.th); apply(); });
+  $('#hfs').onclick = () => { const v = $('#hft').value.trim(); if (!/^hf_[A-Za-z0-9]{20,}$/.test(v)) return toast(t('hf_badfmt'), 'err'); settings.set('hfToken', v); localStorage.removeItem('ebda3_z_off'); localStorage.removeItem('ebda3.imgStatus'); $('#hft').value = ''; $('#hfst').textContent = t('hf_has'); syncBar(); toast(t('hf_saved')); };
+  $('#hfr').onclick = () => { localStorage.removeItem('ebda3.hfToken'); localStorage.removeItem('ebda3_z_off'); localStorage.removeItem('ebda3.imgStatus'); $('#hfst').textContent = t('hf_none'); syncBar(); toast(t('hf_removed')); };
   $('#clr').onclick = async () => { if (!confirm(t('s_clear_c'))) return; for (const p of await projects.all()) await projects.del(p.id); for (const g of await gallery.all()) await gallery.del(g.id); localStorage.clear(); apply(); toast(t('ok')); route(); };
 }
 
@@ -304,7 +314,7 @@ function pagePane(el) {
   <label>${t('e_fontsize')}</label><input type="range" id="fs" min="0" max="60" value="${p.fontSize || 0}">
   ${p.kind === 'puzzle' ? `<label>${t('pz_type')}</label>${sel('pt', [['maze', t('pz_maze')], ['wordsearch', t('pz_ws')], ['mandala', t('pz_mandala')], ['trace', t('pz_trace')], ['math', t('pz_math')]], z.type, 'id=pt')}<label>${t('pz_words')}</label><input id="pw" value="${esc((z.words || []).join(', '))}"><label>${t('pz_chars')}</label><input id="pc" value="${esc(z.chars || '')}"><button class="btn sm" id="ps">${t('pz_make')}</button>` : `
   <label>${t('e_prompt')}</label><textarea id="ipr" rows="3">${esc(p.imagePrompt)}</textarea>
-  <div class="row"><button class="btn primary sm" id="rg">${t('e_regen')}</button><label class="btn sm">${t('e_upload')}<input type="file" id="up" accept="image/*" hidden></label><button class="btn sm" id="ri">${t('e_remove_img')}</button></div>`}
+  <div class="row"><button class="btn primary sm" id="rg">${t('e_regen')}</button><label class="btn sm">${t('e_upload')}<input type="file" id="up" accept="image/*" hidden></label><button class="btn sm" id="ri">${t('e_remove_img')}</button></div>${p.image?.src ? `<p class="muted">${t(p.image.src === 'z-image' ? 'hf_src_z' : 'hf_src_p')}</p>` : ''}`}
   <div class="row"><button class="btn sm" id="mu">↑ ${t('e_up')}</button><button class="btn sm" id="md">↓ ${t('e_down')}</button><button class="btn sm" id="ad">+ ${t('e_add')}</button><button class="btn danger sm" id="dl">${t('e_del')}</button></div>`;
   bind(el, {
     '#k': e => { p.kind = e.target.value; if (p.kind === 'puzzle' && !p.puzzle) p.puzzle = { type: 'maze', seed: B.seed + selIdx, level: 1, words: [], chars: '' }; changed(); inspector(); },
