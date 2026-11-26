@@ -70,7 +70,7 @@ export const STYLES = {
   comic: 'comic book illustration, bold ink outlines', edu: 'simple educational illustration, clear and friendly',
   '3d': 'cute 3D rendered illustration, soft lighting', anime: 'anime style illustration, family friendly',
 };
-const LINE = 'black and white coloring book page, clean thick black outlines, pure white background, no shading, no gray fill, no color, large simple shapes to color';
+const LINE = 'simple black outline drawing on a plain white background, coloring book page, line art only, thick clean outlines, no filled areas, no shading, no gray, no color, large simple shapes';
 
 export function imagePrompt(book, page, extra = '') {
   const chars = (book.characters || []).map(c => `${c.name}: ${c.desc}`).join('; ');
@@ -88,13 +88,11 @@ export function genImage(prompt, { w = 1024, h = 1024, seed, signal, onBusy, fla
     if (!type.startsWith('image/')) throw new AiError('not image', 'bad');
     const blob = await r.blob();
     const bmp = await createImageBitmap(blob);
-    const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
-    const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(bmp, 0, 0);
-    if (flatten) { // push light grays to white so coloring pages print clean
-      const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
-      for (let i = 0; i < p.length; i += 4) { const v = (p[i] + p[i + 1] + p[i + 2]) / 3 > 170 ? 255 : (p[i] + p[i + 1] + p[i + 2]) / 3 < 90 ? 0 : p[i]; p[i] = p[i + 1] = p[i + 2] = v; }
-      x.putImageData(d, 0, 0);
-    }
+    // The anonymous free tier burns a small logo into the bottom edge: crop it off (7%).
+    const ch = Math.round(bmp.height * 0.93);
+    const c = document.createElement('canvas'); c.width = bmp.width; c.height = ch;
+    const x = c.getContext('2d', { willReadFrequently: true }); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(bmp, 0, 0, bmp.width, ch, 0, 0, c.width, ch);
+    if (flatten) toLineArt(x, c.width, c.height);
     return { dataUrl: c.toDataURL('image/jpeg', 0.9), w: c.width, h: c.height, seed: s };
   });
 }
@@ -117,7 +115,7 @@ export async function planOutline(idea, o) {
 
 export async function planAll(idea, o, from, count, book) {
   const kindRule = KIND_RULE[o.type] || KIND_RULE.custom;
-  const sys = `You plan and write a ${o.type} book in one pass. Reply with JSON only: {"title":"","subtitle":"","audience":"","summary":"2 sentences","characters":[{"name":"","desc":"<=25 words English visual description"}],"pages":[{"title":"","text":"","imagePrompt":"","words":[]}]} with exactly ${count} pages. Title, subtitle, summary, page title and text in ${langName(o.lang)}. imagePrompt always in English. Characters only if the book has characters, else []. Age group: ${o.age}. ${kindRule} Do not repeat pages.`;
+  const sys = `You plan and write a ${o.type} book in one pass. Reply with JSON only: {"title":"","subtitle":"","audience":"","summary":"2 sentences","characters":[{"name":"","desc":"<=25 words English visual description"}],"pages":[{"title":"","text":"","imagePrompt":"","words":[]}]} with exactly ${count} pages. Title, subtitle, summary, page title and text in ${langName(o.lang)}. imagePrompt always in English. Characters only if the book has characters, else []. Age group: ${o.age}. ${kindRule} Use simple, correct Modern Standard Arabic if the language is Arabic. Do not repeat pages.`;
   const j = await chatJSON(sys, `Idea: ${idea}\nTitle given: ${o.title || '(choose one)'}\nTotal pages: ${o.pages}`, o);
   if (!Array.isArray(j.pages) || !j.pages.length) throw new AiError('no pages', 'json');
   return j;
@@ -141,7 +139,7 @@ export async function writePages(book, from, count, idea, o = {}) {
     nonfic: 'Each page is a section of a structured book. title = heading. text = 80-140 words. imagePrompt = optional illustration or "".',
     custom: 'Follow the idea. text = short paragraph. imagePrompt = scene to draw.',
   };
-  const sys = `You write pages ${from} to ${from + count - 1} of a ${book.type} book titled "${book.title}" (${book.audience}). Book language: ${langName(book.lang)}. ${kindRule} imagePrompt must be in English. Do not repeat earlier pages. Reply with JSON only: {"pages":[{"title":"","text":"","imagePrompt":"","words":[]}]} with exactly ${count} pages.`;
+  const sys = `You write pages ${from} to ${from + count - 1} of a ${book.type} book titled "${book.title}" (${book.audience}). Book language: ${langName(book.lang)}. ${kindRule} imagePrompt must be in English. Use simple, correct Modern Standard Arabic if the language is Arabic. Do not repeat earlier pages. Reply with JSON only: {"pages":[{"title":"","text":"","imagePrompt":"","words":[]}]} with exactly ${count} pages.`;
   const j = await chatJSON(sys, `Idea: ${idea}\nSummary: ${book.summary}\nCharacters: ${JSON.stringify(book.characters)}\nPrevious pages: ${prev || '(none)'}`, o);
   const arr = Array.isArray(j) ? j : j.pages;
   if (!Array.isArray(arr) || !arr.length) throw new AiError('no pages', 'json');
@@ -164,4 +162,28 @@ export function offlinePlan(idea, o, L) {
     pages.push({ title: (ar ? 'الصفحة ' : 'Page ') + (i + 1), text: o.type === 'coloring' ? '' : (ar ? 'اكتب نص هذه الصفحة هنا.' : 'Write this page text here.'), imagePrompt: `${idea}, scene ${i + 1}`, words: [] });
   }
   return { title: o.title || idea.slice(0, 40), subtitle: '', audience: o.age, characters: [], summary: idea, pages };
+}
+
+// Coloring pages must be black lines on white. Free models often return filled or colored art,
+// so: mostly-white images get contrast-cleaned, everything else becomes an outline (Sobel edges).
+export function toLineArt(x, w, h) {
+  const d = x.getImageData(0, 0, w, h), p = d.data, n = w * h, g = new Float32Array(n);
+  let sum = 0;
+  for (let i = 0; i < n; i++) { g[i] = (p[i * 4] * 0.3 + p[i * 4 + 1] * 0.59 + p[i * 4 + 2] * 0.11); sum += g[i]; }
+  const out = new Uint8Array(n);
+  if (sum / n > 205) { for (let i = 0; i < n; i++) out[i] = g[i] > 150 ? 255 : 0; }
+  else {
+    const b = new Float32Array(n);
+    for (let y = 1; y < h - 1; y++) for (let k = y * w + 1; k < y * w + w - 1; k++) b[k] = (g[k] * 4 + g[k - 1] + g[k + 1] + g[k - w] + g[k + w]) / 8;
+    const mag = new Float32Array(n); let mx = 0;
+    for (let y = 1; y < h - 1; y++) for (let k = y * w + 1; k < y * w + w - 1; k++) {
+      const gx = -b[k - w - 1] - 2 * b[k - 1] - b[k + w - 1] + b[k - w + 1] + 2 * b[k + 1] + b[k + w + 1];
+      const gy = -b[k - w - 1] - 2 * b[k - w] - b[k - w + 1] + b[k + w - 1] + 2 * b[k + w] + b[k + w + 1];
+      mag[k] = Math.abs(gx) + Math.abs(gy); if (mag[k] > mx) mx = mag[k];
+    }
+    const th = mx * 0.16; out.fill(255);
+    for (let k = 0; k < n; k++) if (mag[k] > th) { out[k] = 0; if (k + 1 < n) out[k + 1] = 0; if (k + w < n) out[k + w] = 0; }
+  }
+  for (let i = 0; i < n; i++) { p[i * 4] = p[i * 4 + 1] = p[i * 4 + 2] = out[i]; p[i * 4 + 3] = 255; }
+  x.putImageData(d, 0, 0);
 }
