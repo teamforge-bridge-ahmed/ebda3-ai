@@ -86,7 +86,22 @@ const ZHOST = 'https://mrfakename-z-image-turbo.hf.space/gradio_api/call/generat
 export function hfToken() { try { return String(JSON.parse(localStorage.getItem('ebda3.hfToken') || '""') || '').trim(); } catch { return ''; } }
 export function imgStatus() { try { return JSON.parse(localStorage.getItem('ebda3.imgStatus') || '{}'); } catch { return {}; } }
 function setStatus(o) { const s = { ...imgStatus(), ...o, ts: Date.now() }; try { localStorage.setItem('ebda3.imgStatus', JSON.stringify(s)); } catch {} try { window.dispatchEvent(new CustomEvent('ebda3-img', { detail: s })); } catch {} }
+const PROXY_URL = 'https://ebda3-proxy.onrender.com/img';
+async function viaProxy(prompt, w, h, seed, signal) {
+  try { if (Date.now() < Number(localStorage.getItem('ebda3_p_off') || 0)) return null; } catch {}
+  const k = 768 / Math.max(w, h), W = Math.max(256, Math.round(w * k / 16) * 16), H = Math.max(256, Math.round(h * k / 16) * 16);
+  const ac = new AbortController(), onAbort = () => ac.abort(); signal?.addEventListener('abort', onAbort);
+  const tm = setTimeout(() => ac.abort(), 120000);
+  try {
+    const r = await fetch(PROXY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, w: W, h: H, seed: seed % 100000 }), signal: ac.signal });
+    if (!r.ok) { try { localStorage.setItem('ebda3_p_off', String(Date.now() + (r.status === 429 ? 5 : 2) * 60000)); } catch {} return null; }
+    const b = await r.blob(); if (!b.type.startsWith('image/')) return null;
+    setStatus({ quota: false, bad: false, down: false, last: 'z-image' }); return b;
+  } catch (e) { if (signal?.aborted) throw new AiError('aborted', 'abort'); return null; }
+  finally { clearTimeout(tm); signal?.removeEventListener('abort', onAbort); }
+}
 async function zImage(prompt, w, h, seed, signal) {
+  if (!hfToken()) { const pb = await viaProxy(prompt, w, h, seed, signal); if (pb) return pb; }
   try { if (Date.now() < Number(localStorage.getItem('ebda3_z_off') || 0)) return null; } catch {}
   const tk = hfToken(), hd = tk ? { Authorization: 'Bearer ' + tk } : {};
   const k = 768 / Math.max(w, h), W = Math.max(256, Math.round(w * k / 16) * 16), H = Math.max(256, Math.round(h * k / 16) * 16);
