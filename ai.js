@@ -175,14 +175,20 @@ export function toLineArt(x, w, h) {
   else {
     const b = new Float32Array(n);
     for (let y = 1; y < h - 1; y++) for (let k = y * w + 1; k < y * w + w - 1; k++) b[k] = (g[k] * 4 + g[k - 1] + g[k + 1] + g[k - w] + g[k + w]) / 8;
+    const b2 = new Float32Array(n); for (let y = 1; y < h - 1; y++) for (let k = y * w + 1; k < y * w + w - 1; k++) b2[k] = (b[k] * 4 + b[k - 1] + b[k + 1] + b[k - w] + b[k + w]) / 8;
+    b.set(b2);
     const mag = new Float32Array(n); let mx = 0;
     for (let y = 1; y < h - 1; y++) for (let k = y * w + 1; k < y * w + w - 1; k++) {
       const gx = -b[k - w - 1] - 2 * b[k - 1] - b[k + w - 1] + b[k - w + 1] + 2 * b[k + 1] + b[k + w + 1];
       const gy = -b[k - w - 1] - 2 * b[k - w] - b[k - w + 1] + b[k + w - 1] + 2 * b[k + w] + b[k + w + 1];
       mag[k] = Math.abs(gx) + Math.abs(gy); if (mag[k] > mx) mx = mag[k];
     }
-    const th = mx * 0.16; out.fill(255);
-    for (let k = 0; k < n; k++) if (mag[k] > th) { out[k] = 0; if (k + 1 < n) out[k + 1] = 0; if (k + w < n) out[k + w] = 0; }
+    const th = mx * 0.24; out.fill(255);
+    for (let k = 0; k < n; k++) if (mag[k] > th) { out[k] = 0; if (k + 1 < n) out[k + 1] = 0; if (k + w < n) out[k + w] = 0; } // 2px lines
+    // drop specks: black pixels with almost no black neighbours; clear a thin frame where vignettes cause noise
+    const m = Math.round(Math.min(w, h) * 0.02), keep = new Uint8Array(out);
+    for (let y = 1; y < h - 1; y++) for (let k = y * w + 1; k < y * w + w - 1; k++) if (!keep[k]) { let c = 0; for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) { const q = k + dy * w + dx; if (q >= 0 && q < n && !keep[q]) c++; } if (c < 9) out[k] = 255; }
+    for (let y = 0; y < h; y++) for (let xx = 0; xx < w; xx++) if (y < m || xx < m || y >= h - m || xx >= w - m) out[y * w + xx] = 255;
   }
   for (let i = 0; i < n; i++) { p[i * 4] = p[i * 4 + 1] = p[i * 4 + 2] = out[i]; p[i * 4 + 3] = 255; }
   x.putImageData(d, 0, 0);
