@@ -79,25 +79,32 @@ export function imagePrompt(book, page, extra = '') {
   return `${base}. ${chars ? 'Characters (keep identical): ' + chars + '. ' : ''}${style}. ${extra}`.slice(0, 900);
 }
 
-// Primary image source: the public Z-Image Turbo Hugging Face Space (no key). Anonymous visitors get a small
-// daily GPU quota per IP, so when it says quota/busy we remember that for 30 min and use Pollinations instead.
+// Primary image source: the public Z-Image Turbo Hugging Face Space. Anonymous visitors get a very small daily GPU
+// quota per IP; an optional user-owned Hugging Face token (kept in this browser only) gives the free account quota.
+// When quota runs out we remember it (30 min anonymous, 10 min with token), say so in the UI and use Pollinations.
 const ZHOST = 'https://mrfakename-z-image-turbo.hf.space/gradio_api/call/generate_image';
+export function hfToken() { try { return String(JSON.parse(localStorage.getItem('ebda3.hfToken') || '""') || '').trim(); } catch { return ''; } }
+export function imgStatus() { try { return JSON.parse(localStorage.getItem('ebda3.imgStatus') || '{}'); } catch { return {}; } }
+function setStatus(o) { const s = { ...imgStatus(), ...o, ts: Date.now() }; try { localStorage.setItem('ebda3.imgStatus', JSON.stringify(s)); } catch {} try { window.dispatchEvent(new CustomEvent('ebda3-img', { detail: s })); } catch {} }
 async function zImage(prompt, w, h, seed, signal) {
   try { if (Date.now() < Number(localStorage.getItem('ebda3_z_off') || 0)) return null; } catch {}
+  const tk = hfToken(), hd = tk ? { Authorization: 'Bearer ' + tk } : {};
   const k = 768 / Math.max(w, h), W = Math.max(256, Math.round(w * k / 16) * 16), H = Math.max(256, Math.round(h * k / 16) * 16);
-  const off = () => { try { localStorage.setItem('ebda3_z_off', String(Date.now() + 30 * 60000)); } catch {} return null; };
+  const off = (st) => { try { localStorage.setItem('ebda3_z_off', String(Date.now() + (tk ? 10 : 30) * 60000)); } catch {} setStatus(st); return null; };
   const ac = new AbortController(), onAbort = () => ac.abort(); signal?.addEventListener('abort', onAbort);
   const tm = setTimeout(() => ac.abort(), 100000);
   try {
-    const r = await fetch(ZHOST, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: [prompt, H, W, 9, seed % 100000, false] }), signal: ac.signal });
-    if (!r.ok) return off();
+    const r = await fetch(ZHOST, { method: 'POST', headers: { 'Content-Type': 'application/json', ...hd }, body: JSON.stringify({ data: [prompt, H, W, 9, seed % 100000, false] }), signal: ac.signal });
+    if (tk && (r.status === 401 || r.status === 403)) return off({ bad: true, quota: false });
+    if (!r.ok) return off({ down: true });
     const { event_id } = await r.json();
-    const t = await (await fetch(ZHOST + '/' + event_id, { signal: ac.signal })).text();
+    const t = await (await fetch(ZHOST + '/' + event_id, { headers: hd, signal: ac.signal })).text();
     const m = t.match(/event: complete\s*\ndata: (.*)/);
-    if (!m) return /quota|exceeded/i.test(t) ? off() : null;
+    if (!m) return /quota|exceeded/i.test(t) ? off({ quota: true, bad: false, withToken: !!tk }) : /token|unauthor|invalid/i.test(t) && tk ? off({ bad: true }) : null;
     const url = JSON.parse(m[1])[0]?.url; if (!url) return null;
-    const ir = await fetch(url, { signal: ac.signal }); if (!ir.ok) return null;
-    const b = await ir.blob(); return b.type.startsWith('image/') ? b : null;
+    const ir = await fetch(url, { headers: hd, signal: ac.signal }); if (!ir.ok) return null;
+    const b = await ir.blob(); if (!b.type.startsWith('image/')) return null;
+    setStatus({ quota: false, bad: false, down: false, last: 'z-image' }); return b;
   } catch (e) { if (signal?.aborted) throw new AiError('aborted', 'abort'); return null; }
   finally { clearTimeout(tm); signal?.removeEventListener('abort', onAbort); }
 }
@@ -105,7 +112,7 @@ export function genImage(prompt, { w = 1024, h = 1024, seed, signal, onBusy, fla
   return queued(async () => {
     const s = seed ?? Math.floor(Math.random() * 1e6);
     let blob = null, src = 'pollinations';
-    blob = await zImage(prompt, w, h, s, signal); if (blob) src = 'z-image';
+    blob = await zImage(prompt, w, h, s, signal); if (blob) src = 'z-image'; else setStatus({ last: 'pollinations' });
     if (!blob) {
       const url = IMG_URL + encodeURIComponent(prompt) + '?width=' + w + '&height=' + h + '&seed=' + s + '&nologo=true&safe=true';
       const r = await fetchRetry(url, {}, { timeout: 120000, signal, onBusy });
