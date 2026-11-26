@@ -15,7 +15,7 @@ export async function drawPageImage(book, page, { signal, big = false, onBusy } 
   const prompt = AI.imagePrompt(book, page);
   const seed = book.seed + (book.pages.indexOf(page) + 1) * 7 + (page._try = (page._try || 0) + 1) * 1000;
   const r = await AI.genImage(prompt, { w, h, seed: page._try > 1 ? undefined : seed, signal, onBusy, flatten: book.type === 'coloring' });
-  page.image = { dataUrl: r.dataUrl, w: r.w, h: r.h, seed: r.seed };
+  page.image = { dataUrl: r.dataUrl, w: r.w, h: r.h, seed: r.seed, src: r.src };
 }
 export async function drawCover(book, opt = {}) {
   const { w, h } = imgSize(book, 'cover', opt.big);
