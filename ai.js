@@ -70,7 +70,7 @@ export const STYLES = {
   comic: 'comic book illustration, bold ink outlines', edu: 'simple educational illustration, clear and friendly',
   '3d': 'cute 3D rendered illustration, soft lighting', anime: 'anime style illustration, family friendly',
 };
-const LINE = 'simple black outline drawing on a plain white background, coloring book page, line art only, thick clean outlines, no filled areas, no shading, no gray, no color, large simple shapes';
+const LINE = "coloring book page for kids, bold thick clean black outlines, closed shapes, full scene with characters and props, pure white background, no shading, no gray, no color, no text, vector line art";
 
 export function imagePrompt(book, page, extra = '') {
   const chars = (book.characters || []).map(c => `${c.name}: ${c.desc}`).join('; ');
@@ -79,21 +79,47 @@ export function imagePrompt(book, page, extra = '') {
   return `${base}. ${chars ? 'Characters (keep identical): ' + chars + '. ' : ''}${style}. ${extra}`.slice(0, 900);
 }
 
+// Primary image source: the public Z-Image Turbo Hugging Face Space (no key). Anonymous visitors get a small
+// daily GPU quota per IP, so when it says quota/busy we remember that for 30 min and use Pollinations instead.
+const ZHOST = 'https://mrfakename-z-image-turbo.hf.space/gradio_api/call/generate_image';
+async function zImage(prompt, w, h, seed, signal) {
+  try { if (Date.now() < Number(localStorage.getItem('ebda3_z_off') || 0)) return null; } catch {}
+  const k = 768 / Math.max(w, h), W = Math.max(256, Math.round(w * k / 16) * 16), H = Math.max(256, Math.round(h * k / 16) * 16);
+  const off = () => { try { localStorage.setItem('ebda3_z_off', String(Date.now() + 30 * 60000)); } catch {} return null; };
+  const ac = new AbortController(), onAbort = () => ac.abort(); signal?.addEventListener('abort', onAbort);
+  const tm = setTimeout(() => ac.abort(), 100000);
+  try {
+    const r = await fetch(ZHOST, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: [prompt, H, W, 9, seed % 100000, false] }), signal: ac.signal });
+    if (!r.ok) return off();
+    const { event_id } = await r.json();
+    const t = await (await fetch(ZHOST + '/' + event_id, { signal: ac.signal })).text();
+    const m = t.match(/event: complete\s*\ndata: (.*)/);
+    if (!m) return /quota|exceeded/i.test(t) ? off() : null;
+    const url = JSON.parse(m[1])[0]?.url; if (!url) return null;
+    const ir = await fetch(url, { signal: ac.signal }); if (!ir.ok) return null;
+    const b = await ir.blob(); return b.type.startsWith('image/') ? b : null;
+  } catch (e) { if (signal?.aborted) throw new AiError('aborted', 'abort'); return null; }
+  finally { clearTimeout(tm); signal?.removeEventListener('abort', onAbort); }
+}
 export function genImage(prompt, { w = 1024, h = 1024, seed, signal, onBusy, flatten = false } = {}) {
   return queued(async () => {
     const s = seed ?? Math.floor(Math.random() * 1e6);
-    const url = `${IMG_URL}${encodeURIComponent(prompt)}?width=${w}&height=${h}&seed=${s}&nologo=true&safe=true`;
-    const r = await fetchRetry(url, {}, { timeout: 120000, signal, onBusy });
-    const type = r.headers.get('content-type') || '';
-    if (!type.startsWith('image/')) throw new AiError('not image', 'bad');
-    const blob = await r.blob();
+    let blob = null, src = 'pollinations';
+    blob = await zImage(prompt, w, h, s, signal); if (blob) src = 'z-image';
+    if (!blob) {
+      const url = IMG_URL + encodeURIComponent(prompt) + '?width=' + w + '&height=' + h + '&seed=' + s + '&nologo=true&safe=true';
+      const r = await fetchRetry(url, {}, { timeout: 120000, signal, onBusy });
+      const type = r.headers.get('content-type') || '';
+      if (!type.startsWith('image/')) throw new AiError('not image', 'bad');
+      blob = await r.blob();
+    }
     const bmp = await createImageBitmap(blob);
-    // The anonymous free tier burns a small logo into the bottom edge: crop it off (7%).
-    const ch = Math.round(bmp.height * 0.93);
+    // The Pollinations free tier burns a small logo into the bottom edge: crop it off (7%). Z-Image has none.
+    const ch = src === 'z-image' ? bmp.height : Math.round(bmp.height * 0.93);
     const c = document.createElement('canvas'); c.width = bmp.width; c.height = ch;
     const x = c.getContext('2d', { willReadFrequently: true }); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(bmp, 0, 0, bmp.width, ch, 0, 0, c.width, ch);
     if (flatten) toLineArt(x, c.width, c.height);
-    return { dataUrl: c.toDataURL('image/jpeg', 0.9), w: c.width, h: c.height, seed: s };
+    return { dataUrl: c.toDataURL('image/jpeg', 0.9), w: c.width, h: c.height, seed: s, src };
   });
 }
 
