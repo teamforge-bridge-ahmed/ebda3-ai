@@ -99,7 +99,7 @@ async function viaProxy(prompt, w, h, seed, signal) {
       if (r.status === 429) { const e = await r.clone().json().catch(() => ({})); if (e.error === 'rate' || e.error === 'busy') { await sleep(2000 + n * 1000); continue; } }
       break;
     }
-    if (!r.ok) { try { localStorage.setItem('ebda3_p_off', String(Date.now() + (r.status === 429 ? 5 : 2) * 60000)); } catch {} return null; }
+    if (!r.ok) { const e = await r.clone().json().catch(() => ({})); try { localStorage.setItem('ebda3_p_off', String(Date.now() + (e.error === 'ipday' ? 360 : r.status === 429 ? 5 : 2) * 60000)); } catch {} return null; }
     const b = await r.blob(); if (!b.type.startsWith('image/')) return null;
     setStatus({ quota: false, bad: false, down: false, last: 'z-image' }); return b;
   } catch (e) { if (signal?.aborted) throw new AiError('aborted', 'abort'); return null; }
