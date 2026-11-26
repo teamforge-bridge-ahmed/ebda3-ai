@@ -159,10 +159,9 @@ async function runCreate(d) {
     }
     await save(); st.p_write = 'ok'; st.p_images = 'run'; open = true; draw();
     let failed = 0;
-    for (const p of book.pages.filter(Q.needsImage)) {
-      try { await Q.drawPageImage(book, p, opt); msg = ''; await save(); } catch (e) { if (ac.signal.aborted) throw e; failed++; }
-      draw();
-    }
+    { const todo = book.pages.filter(Q.needsImage); let ix = 0;
+      const worker = async () => { while (ix < todo.length && !ac.signal.aborted) { const p = todo[ix++]; try { await Q.drawPageImage(book, p, opt); msg = ''; await save(); } catch (e) { if (ac.signal.aborted) return; failed++; } draw(); } };
+      await Promise.all([worker(), worker(), worker()]); if (ac.signal.aborted) throw new Error('abort'); }
     if (failed) msg = (msg ? msg + ' ' : '') + t('p_img_fail', { n: failed });
     st.p_images = failed ? 'warn' : 'ok'; st.p_cover = 'run'; draw();
     book.cover = { prompt: `${book.title}. ${book.summary || d.idea}` };
