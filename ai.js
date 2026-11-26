@@ -1,0 +1,167 @@
+// AI services: free Pollinations text + image endpoints, called from the browser.
+// No keys, no payment. Every call can fail; callers must handle errors.
+const TEXT_URL = 'https://text.pollinations.ai/';
+const IMG_URL = 'https://image.pollinations.ai/prompt/';
+
+export class AiError extends Error { constructor(m, code) { super(m); this.code = code; } }
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// One request at a time: the anonymous free tier rejects parallel requests.
+let chain = Promise.resolve();
+function queued(fn) {
+  const run = chain.then(fn, fn);
+  chain = run.catch(() => {});
+  return run;
+}
+async function fetchRetry(url, opts, { tries = 4, timeout = 90000, onBusy, signal } = {}) {
+  let last, waitMs = 0, limited = 0;
+  for (let i = 0; i < tries; i++) {
+    if (signal?.aborted) throw new AiError('aborted', 'abort');
+    const ac = new AbortController();
+    const tm = setTimeout(() => ac.abort(), timeout);
+    const onAbort = () => ac.abort();
+    signal?.addEventListener('abort', onAbort);
+    try {
+      const r = await fetch(url, { ...opts, signal: ac.signal });
+      if (r.ok) return r;
+      last = new AiError('HTTP ' + r.status, r.status);
+      if (r.status === 402 || r.status === 429) { // free-tier rate limit: wait the time the service asks for
+        const m = (await r.text().catch(() => '')).match(/wait (\d+) seconds?/i);
+        waitMs = ((m ? +m[1] : 20) + 2) * 1000; i--; if (++limited > 8) throw last;
+      } else if (r.status < 500) throw last;
+    } catch (e) {
+      if (signal?.aborted) throw new AiError('aborted', 'abort');
+      last = e instanceof AiError ? e : new AiError(e.message || 'network', 'net');
+      if (last.code !== 402 && last.code !== 429 && typeof last.code === 'number' && last.code < 500) throw last;
+    } finally { clearTimeout(tm); signal?.removeEventListener('abort', onAbort); }
+    onBusy?.(i + 1, waitMs / 1000);
+    await sleep(waitMs || 3000 * (i + 1)); waitMs = 0;
+  }
+  throw last || new AiError('failed', 'net');
+}
+
+export function chat(system, user, { json = false, signal, onBusy } = {}) {
+  return queued(async () => {
+    const body = { messages: [{ role: 'system', content: system }, { role: 'user', content: user }], model: 'openai', jsonMode: json, seed: Math.floor(Math.random() * 1e6) };
+    const r = await fetchRetry(TEXT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, { signal, onBusy });
+    const txt = (await r.text()).trim();
+    if (!txt) throw new AiError('empty', 'empty');
+    return txt;
+  });
+}
+export function parseJSON(txt) {
+  try { return JSON.parse(txt); } catch {}
+  const m = txt.match(/\{[\s\S]*\}/) || txt.match(/\[[\s\S]*\]/);
+  if (m) { try { return JSON.parse(m[0]); } catch {} }
+  throw new AiError('bad json', 'json');
+}
+export async function chatJSON(system, user, opt) {
+  let last;
+  for (let i = 0; i < 2; i++) {
+    try { return parseJSON(await chat(system, user, { ...opt, json: true })); } catch (e) { last = e; if (e.code === 'abort') throw e; }
+  }
+  throw last;
+}
+
+export const STYLES = {
+  cartoon: 'colorful cartoon illustration, clean shapes', cute: 'cute kawaii illustration, soft pastel colors, rounded shapes',
+  storybook: "children's storybook watercolor illustration, warm", lineart: 'clean black line art illustration',
+  minimal: 'minimalist flat vector illustration', realistic: 'realistic detailed illustration', fantasy: 'fantasy digital painting, magical',
+  comic: 'comic book illustration, bold ink outlines', edu: 'simple educational illustration, clear and friendly',
+  '3d': 'cute 3D rendered illustration, soft lighting', anime: 'anime style illustration, family friendly',
+};
+const LINE = 'black and white coloring book page, clean thick black outlines, pure white background, no shading, no gray fill, no color, large simple shapes to color';
+
+export function imagePrompt(book, page, extra = '') {
+  const chars = (book.characters || []).map(c => `${c.name}: ${c.desc}`).join('; ');
+  const base = page.imagePrompt || page.title || book.title;
+  const style = book.type === 'coloring' ? LINE + (book.detail === 'low' ? ', very simple shapes' : book.detail === 'high' ? ', intricate detailed patterns' : '') : (STYLES[book.style] || STYLES.cartoon);
+  return `${base}. ${chars ? 'Characters (keep identical): ' + chars + '. ' : ''}${style}. ${extra}`.slice(0, 900);
+}
+
+export function genImage(prompt, { w = 1024, h = 1024, seed, signal, onBusy, flatten = false } = {}) {
+  return queued(async () => {
+    const s = seed ?? Math.floor(Math.random() * 1e6);
+    const url = `${IMG_URL}${encodeURIComponent(prompt)}?width=${w}&height=${h}&seed=${s}&nologo=true&safe=true`;
+    const r = await fetchRetry(url, {}, { timeout: 120000, signal, onBusy });
+    const type = r.headers.get('content-type') || '';
+    if (!type.startsWith('image/')) throw new AiError('not image', 'bad');
+    const blob = await r.blob();
+    const bmp = await createImageBitmap(blob);
+    const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+    const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(bmp, 0, 0);
+    if (flatten) { // push light grays to white so coloring pages print clean
+      const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
+      for (let i = 0; i < p.length; i += 4) { const v = (p[i] + p[i + 1] + p[i + 2]) / 3 > 170 ? 255 : (p[i] + p[i + 1] + p[i + 2]) / 3 < 90 ? 0 : p[i]; p[i] = p[i + 1] = p[i + 2] = v; }
+      x.putImageData(d, 0, 0);
+    }
+    return { dataUrl: c.toDataURL('image/jpeg', 0.9), w: c.width, h: c.height, seed: s };
+  });
+}
+
+const LANGN = { ar: 'Arabic', en: 'English', fr: 'French', es: 'Spanish', de: 'German', tr: 'Turkish' };
+export const langName = (l) => LANGN[l] || l;
+
+export async function suggest(idea, o = {}) {
+  const sys = 'You configure a book-creation tool. Reply with JSON only: {"type":"story|coloring|learn|activity|nonfic|custom","pages":number 8-60,"age":"any|46|48|69|912|teen|adult","lang":"ar|en|fr|es|de|tr","style":"cartoon|cute|storybook|lineart|minimal|realistic|fantasy|comic|edu|3d|anime","detail":"low|mid|high","size":"sq|us|69|810|a4|a5","title":"short title in the book language","author":""}. Use what the user wrote; infer the rest sensibly. Language = the language of the idea unless stated.';
+  const j = await chatJSON(sys, idea, o);
+  return j;
+}
+
+export async function planOutline(idea, o) {
+  const { type, pages, age, lang, style, title, author } = o;
+  const sys = `You plan a ${type} book. Reply with JSON only: {"title":"","subtitle":"","audience":"","characters":[{"name":"","desc":"<=25 words English visual description: species/age, hair, clothes, colors"}],"summary":"2 sentences"}. Title, subtitle and summary in ${langName(lang)}. Characters only if the book has characters, otherwise []. Keep it age-appropriate for ${age}.`;
+  const j = await chatJSON(sys, `Idea: ${idea}\nPages: ${pages}\nTitle given: ${title || '(choose one)'}\nStyle: ${style}`, o);
+  return { title: title || j.title, subtitle: j.subtitle || '', audience: j.audience || '', characters: Array.isArray(j.characters) ? j.characters.slice(0, 5) : [], summary: j.summary || '' };
+}
+
+export async function planAll(idea, o, from, count, book) {
+  const kindRule = KIND_RULE[o.type] || KIND_RULE.custom;
+  const sys = `You plan and write a ${o.type} book in one pass. Reply with JSON only: {"title":"","subtitle":"","audience":"","summary":"2 sentences","characters":[{"name":"","desc":"<=25 words English visual description"}],"pages":[{"title":"","text":"","imagePrompt":"","words":[]}]} with exactly ${count} pages. Title, subtitle, summary, page title and text in ${langName(o.lang)}. imagePrompt always in English. Characters only if the book has characters, else []. Age group: ${o.age}. ${kindRule} Do not repeat pages.`;
+  const j = await chatJSON(sys, `Idea: ${idea}\nTitle given: ${o.title || '(choose one)'}\nTotal pages: ${o.pages}`, o);
+  if (!Array.isArray(j.pages) || !j.pages.length) throw new AiError('no pages', 'json');
+  return j;
+}
+const KIND_RULE = {
+  story: 'One story across the whole book with a clear beginning, middle and end. text = 2-4 short sentences. imagePrompt = the scene to draw.',
+  coloring: 'Each page is a different subject or scene to color. text = "" or a 3-6 word caption. imagePrompt = simple clear subject.',
+  learn: 'Each page teaches one item (letter, number, word or concept) with a short friendly explanation and one example. imagePrompt = picture of the example.',
+  activity: 'Each page is a themed activity. title = activity name. text = one short instruction. words = 6-8 simple theme words in the book language (single words). imagePrompt = simple theme picture.',
+  nonfic: 'Each page is a section. title = heading. text = 80-140 words. imagePrompt = optional illustration or "".',
+  custom: 'Follow the idea. text = short paragraph. imagePrompt = scene to draw.',
+};
+export async function writePages(book, from, count, idea, o = {}) {
+  const prev = book.pages.slice(Math.max(1, from - 4), from).map(p => p.title || p.text?.slice(0, 40)).join(' | ');
+  const kindRule = KIND_RULE[book.type] || '';
+  const _unused = {
+    story: 'Each page continues one story with a clear beginning, middle and end across the whole book. text = 2-4 short sentences. imagePrompt = the scene to draw.',
+    coloring: 'Each page is a different subject or scene to color. text = "" (empty) or a 3-6 word caption. imagePrompt = a simple clear subject description.',
+    learn: 'Each page teaches one item (a letter, number, word or concept) with a short friendly explanation and one example. imagePrompt = a picture of the example.',
+    activity: 'Each page is a themed activity. title = activity name. text = one short instruction. words = 6-8 simple theme words in the book language (single words, no spaces). imagePrompt = a simple theme picture.',
+    nonfic: 'Each page is a section of a structured book. title = heading. text = 80-140 words. imagePrompt = optional illustration or "".',
+    custom: 'Follow the idea. text = short paragraph. imagePrompt = scene to draw.',
+  };
+  const sys = `You write pages ${from} to ${from + count - 1} of a ${book.type} book titled "${book.title}" (${book.audience}). Book language: ${langName(book.lang)}. ${kindRule} imagePrompt must be in English. Do not repeat earlier pages. Reply with JSON only: {"pages":[{"title":"","text":"","imagePrompt":"","words":[]}]} with exactly ${count} pages.`;
+  const j = await chatJSON(sys, `Idea: ${idea}\nSummary: ${book.summary}\nCharacters: ${JSON.stringify(book.characters)}\nPrevious pages: ${prev || '(none)'}`, o);
+  const arr = Array.isArray(j) ? j : j.pages;
+  if (!Array.isArray(arr) || !arr.length) throw new AiError('no pages', 'json');
+  return arr.slice(0, count);
+}
+
+export async function improveText(text, mode, lang, o) {
+  const sys = mode === 'fix'
+    ? `Correct spelling and grammar only. Keep wording, meaning and language (${langName(lang)}). Reply with the corrected text only.`
+    : `Improve the writing: clearer, more vivid, same meaning, same language (${langName(lang)}), similar length. Reply with the improved text only.`;
+  return (await chat(sys, text, o)).replace(/^["“]|["”]$/g, '');
+}
+
+// Basic non-AI outline used only when the AI service is unreachable.
+export function offlinePlan(idea, o, L) {
+  const n = o.pages;
+  const ar = o.lang === 'ar';
+  const pages = [];
+  for (let i = 0; i < n; i++) {
+    pages.push({ title: (ar ? 'الصفحة ' : 'Page ') + (i + 1), text: o.type === 'coloring' ? '' : (ar ? 'اكتب نص هذه الصفحة هنا.' : 'Write this page text here.'), imagePrompt: `${idea}, scene ${i + 1}`, words: [] });
+  }
+  return { title: o.title || idea.slice(0, 40), subtitle: '', audience: o.age, characters: [], summary: idea, pages };
+}
