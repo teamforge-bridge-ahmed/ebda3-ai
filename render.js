@@ -65,12 +65,12 @@ export async function renderPage(book, page, { dpi = 100, bleed = false, index =
   if (kind === 'image') {
     if (img) {
       if (book.type === 'coloring') {
-        contain(ctx, img, X + m, Y + m, tw - 2 * m, th - 2 * m - (page.text ? dpi * 0.5 : 0));
-        ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(2, dpi / 40); ctx.strokeRect(X + m * 0.6, Y + m * 0.6, tw - m * 1.2, th - m * 1.2 - (page.text ? dpi * 0.5 : 0));
+        contain(ctx, img, X + m, Y + m, tw - 2 * m, th - 2 * m - (page.text ? dpi * 0.75 : 0));
+        ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(2, dpi / 40); ctx.strokeRect(X + m * 0.6, Y + m * 0.6, tw - m * 1.2, th - m * 1.2 - (page.text ? dpi * 0.75 : 0));
       } else cover(ctx, img, bleed ? 0 : X, bleed ? 0 : Y, w, h);
       c.meta.lowres = Math.min(img.width / ((tw - 2 * m) / dpi), img.height / ((th - 2 * m) / dpi)) < 150;
     }
-    if (page.text) { const r = drawText(ctx, page.text, { x: X + m, y: Y + th - m - dpi * 0.4, w: tw - 2 * m, h: dpi * 0.5 }, { lang, maxFs: dpi * 0.3, minFs: dpi * 0.15, align: 'center', color: book.type === 'coloring' ? '#000' : '#fff' }); c.meta.overflow = r.overflow; }
+    if (page.text) { const r = drawText(ctx, page.text, { x: X + m, y: Y + th - m - dpi * 0.5, w: tw - 2 * m, h: dpi * 0.5 }, { lang, maxFs: dpi * 0.3, minFs: dpi * 0.15, align: 'center', color: book.type === 'coloring' ? '#000' : '#fff' }); c.meta.overflow = r.overflow; }
     return c;
   }
   if (kind === 'story') {
