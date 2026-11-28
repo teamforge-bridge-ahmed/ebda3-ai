@@ -3,6 +3,10 @@
 const TEXT_URL = 'https://text.pollinations.ai/';
 const IMG_URL = 'https://image.pollinations.ai/prompt/';
 
+// When the fast path is out of quota, drop new requests to 512px: about 3x faster and the A/B showed quality holds.
+function lowQuota() { try { const n = Date.now(); return n < Number(localStorage.getItem('ebda3_p_off') || 0) || n < Number(localStorage.getItem('ebda3_z_off') || 0); } catch { return false; } }
+function targetMax() { return lowQuota() ? 512 : 768; }
+
 export class AiError extends Error { constructor(m, code) { super(m); this.code = code; } }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -72,11 +76,12 @@ export const STYLES = {
 };
 const LINE = "coloring book page for kids, bold thick clean black outlines, closed shapes, full scene with characters and props, pure white background, no shading, no gray, no color, no text, vector line art";
 
-export function imagePrompt(book, page, extra = '') {
-  const chars = (book.characters || []).map(c => `${c.name}: ${c.desc}`).join('; ');
-  const base = page.imagePrompt || page.title || book.title;
-  const style = book.type === 'coloring' ? LINE + (book.detail === 'low' ? ', very simple shapes' : book.detail === 'high' ? ', intricate detailed patterns' : '') : (STYLES[book.style] || STYLES.cartoon);
-  return `${base}. ${chars ? 'Characters (keep identical): ' + chars + '. ' : ''}${style}. ${extra}`.slice(0, 900);
+export function imagePrompt(book, page, extra = '', fb = false) {
+ const chars = (book.characters || []).map(c => c.name + ': ' + c.desc).join('; ');
+ const base = page.imagePrompt || page.title || book.title;
+ const style = book.type === 'coloring' ? LINE + (book.detail === 'low' ? ', very simple shapes' : book.detail === 'high' ? ', intricate detailed patterns' : '') : (STYLES[book.style] || STYLES.cartoon);
+ if (fb) return (base + '. ' + style + '. ' + extra).slice(0, 500);
+ return (base + '. ' + (chars ? 'Characters (keep identical): ' + chars + '. ' : '') + style + '. ' + extra).slice(0, 900);
 }
 
 // Primary image source: the public Z-Image Turbo Hugging Face Space. Anonymous visitors get a very small daily GPU
@@ -89,7 +94,7 @@ function setStatus(o) { const s = { ...imgStatus(), ...o, ts: Date.now() }; try 
 const PROXY_URL = 'https://ebda3-proxy.onrender.com/img';
 async function viaProxy(prompt, w, h, seed, signal) {
   try { if (Date.now() < Number(localStorage.getItem('ebda3_p_off') || 0)) return null; } catch {}
-  const k = 768 / Math.max(w, h), W = Math.max(256, Math.round(w * k / 16) * 16), H = Math.max(256, Math.round(h * k / 16) * 16);
+  const k = targetMax() / Math.max(w, h), W = Math.max(256, Math.round(w * k / 16) * 16), H = Math.max(256, Math.round(h * k / 16) * 16);
   const ac = new AbortController(), onAbort = () => ac.abort(); signal?.addEventListener('abort', onAbort);
   const tm = setTimeout(() => ac.abort(), 120000);
   try {
@@ -109,7 +114,7 @@ async function zImage(prompt, w, h, seed, signal) {
   if (!hfToken()) { const pb = await viaProxy(prompt, w, h, seed, signal); if (pb) return pb; }
   try { if (Date.now() < Number(localStorage.getItem('ebda3_z_off') || 0)) return null; } catch {}
   const tk = hfToken(), hd = tk ? { Authorization: 'Bearer ' + tk } : {};
-  const k = 768 / Math.max(w, h), W = Math.max(256, Math.round(w * k / 16) * 16), H = Math.max(256, Math.round(h * k / 16) * 16);
+  const k = targetMax() / Math.max(w, h), W = Math.max(256, Math.round(w * k / 16) * 16), H = Math.max(256, Math.round(h * k / 16) * 16);
   const off = (st) => { try { localStorage.setItem('ebda3_z_off', String(Date.now() + (tk ? 10 : 30) * 60000)); } catch {} setStatus(st); return null; };
   const ac = new AbortController(), onAbort = () => ac.abort(); signal?.addEventListener('abort', onAbort);
   const tm = setTimeout(() => ac.abort(), 100000);
@@ -128,13 +133,14 @@ async function zImage(prompt, w, h, seed, signal) {
   } catch (e) { if (signal?.aborted) throw new AiError('aborted', 'abort'); return null; }
   finally { clearTimeout(tm); signal?.removeEventListener('abort', onAbort); }
 }
-export function genImage(prompt, { w = 1024, h = 1024, seed, signal, onBusy, flatten = false } = {}) {
+export function genImage(prompt, { w = 1024, h = 1024, seed, signal, onBusy, flatten = false, fb = '' } = {}) {
   return (async () => {
     const s = seed ?? Math.floor(Math.random() * 1e6);
     let blob = null, src = 'pollinations';
     blob = await zImage(prompt, w, h, s, signal); if (blob) src = 'z-image'; else setStatus({ last: 'pollinations' });
     if (!blob) {
-      const url = IMG_URL + encodeURIComponent(prompt) + '?width=' + w + '&height=' + h + '&seed=' + s + '&nologo=true&safe=true';
+      const kk = Math.min(1, targetMax() / Math.max(w, h)), fw = Math.max(256, Math.round(w * kk / 16) * 16), fh = Math.max(256, Math.round(h * kk / 16) * 16);
+ const url = IMG_URL + encodeURIComponent(fb || prompt) + '?width=' + fw + '&height=' + fh + '&seed=' + s + '&nologo=true&safe=true';
       const r = await queued(() => fetchRetry(url, {}, { timeout: 120000, signal, onBusy }));
       const type = r.headers.get('content-type') || '';
       if (!type.startsWith('image/')) throw new AiError('not image', 'bad');
